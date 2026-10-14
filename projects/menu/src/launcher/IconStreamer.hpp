@@ -61,6 +61,10 @@ public:
     void clear();
     void cancelPending();
 
+    /// While paused no icon is decoded or uploaded. Used when the menu starts only
+    /// to show the lock screen, so HOME does not take GPU memory the lock needs.
+    void setPaused(bool paused) { m_paused = paused; }
+
     // Keep internal compressed data and loaded-slot mappings aligned when
     // app entries are swapped in the grid model.
     bool swapIndices(int a, int b);
@@ -111,6 +115,7 @@ private:
     std::vector<int> m_freeSlots;
 
     int m_lastPage = -1;
+    bool m_paused = false;
     int m_lastIconsPerPage = -1;
     int m_pinnedIndex = -1;
 
