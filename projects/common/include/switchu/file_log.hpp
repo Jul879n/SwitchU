@@ -63,6 +63,15 @@ public:
         va_end(args);
         log("%s", buf);
         flush();
+        // Diagnostic: also append to trace.log (opened/closed per line) so it
+        // stays readable over FTP while the daemon holds the main log open.
+        if (FILE* trace = std::fopen("sdmc:/config/SwitchU/trace.log", "a")) {
+            char timestamp[32];
+            log_detail::format_line_timestamp(timestamp, sizeof(timestamp));
+            std::fprintf(trace, "[%s] tick=%llu %s\n", timestamp,
+                         static_cast<unsigned long long>(armGetSystemTick()), buf);
+            std::fclose(trace);
+        }
         fsdevCommitDevice("sdmc");
     }
 

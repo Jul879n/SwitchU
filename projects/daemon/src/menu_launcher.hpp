@@ -19,6 +19,7 @@ static bool g_commandEventInitialized = false;
 static bool g_commandEventAvailable = false;
 static LibAppletExitReason g_lastExitReason = LibAppletExitReason_Normal;
 static uint64_t g_startedAtTick = 0;
+static bool g_ready = false;
 static uint64_t g_lastRuntimeNs = 0;
 
 inline bool hasHolder() {
@@ -46,24 +47,24 @@ inline Event* commandEvent() {
         const Result rc = appletHolderGetPopInteractiveOutDataEvent(&g_holder, &event);
         g_commandEventAvailable = R_SUCCEEDED(rc) && event != nullptr;
         if (!g_commandEventAvailable)
-            switchu::FileLog::log("[menu_la] command event unavailable rc=0x%X", rc);
+            switchu::FileLog::logCommit("[menu_la] command event unavailable rc=0x%X", rc);
     }
     return g_commandEventAvailable ? &g_holder.PopInteractiveOutDataEvent : nullptr;
 }
 
 inline Result create() {
     const uint64_t startedAt = armGetSystemTick();
-    switchu::FileLog::log("[menu_la] create begin active=%d holderActive=%d",
+    switchu::FileLog::logCommit("[menu_la] create begin active=%d holderActive=%d",
                           g_active ? 1 : 0,
                           (g_active && appletHolderActive(&g_holder)) ? 1 : 0);
     Result rc = appletCreateLibraryApplet(&g_holder,
         kMenuAppletId, LibAppletMode_AllForeground);
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[menu_la] CreateLibApplet id=0x%X FAIL: 0x%X",
+        switchu::FileLog::logCommit("[menu_la] CreateLibApplet id=0x%X FAIL: 0x%X",
                               (u32)kMenuAppletId, rc);
         return rc;
     }
-    switchu::FileLog::log("[menu_la] create ok id=0x%X elapsed=%lums",
+    switchu::FileLog::logCommit("[menu_la] create ok id=0x%X elapsed=%lums",
                           (u32)kMenuAppletId,
                           static_cast<unsigned long>(
                               armTicksToNs(armGetSystemTick() - startedAt) / 1'000'000ULL));
@@ -92,10 +93,20 @@ inline Result cleanupHolder() {
 
 inline Result terminate();
 
+inline void markReady() { g_ready = true; }
+
+// True while a started menu has not yet reported MenuReady; returns how long.
+inline bool awaitingReady(uint64_t* elapsedNs) {
+    if (!g_active || g_ready || g_startedAtTick == 0 || !appletHolderActive(&g_holder))
+        return false;
+    *elapsedNs = armTicksToNs(armGetSystemTick() - g_startedAtTick);
+    return true;
+}
+
 inline Result prepare() {
     const uint64_t startedAt = armGetSystemTick();
     if (g_holderCreated) {
-        switchu::FileLog::log("[menu_la] prepare requested while holder exists; terminating first");
+        switchu::FileLog::logCommit("[menu_la] prepare requested while holder exists; terminating first");
         const Result terminateRc = terminate();
         if (R_FAILED(terminateRc))
             return terminateRc;
@@ -111,17 +122,17 @@ inline Result prepare() {
         Result ecsRc = switchu::daemon::registerExternalContent(
             switchu::smi::kMenuTakeoverProgramId, "/switch/SwitchU/bin/menu");
         if (R_FAILED(ecsRc)) {
-            switchu::FileLog::log("[menu_la] external content registration failed rc=0x%X", ecsRc);
+            switchu::FileLog::logCommit("[menu_la] external content registration failed rc=0x%X", ecsRc);
             return ecsRc;
         }
         g_externalRegistered = true;
-        switchu::FileLog::log("[menu_la] external content ready elapsed=%lums",
+        switchu::FileLog::logCommit("[menu_la] external content ready elapsed=%lums",
                               static_cast<unsigned long>(
                                   armTicksToNs(armGetSystemTick() - registerStartedAt)
                                   / 1'000'000ULL));
     }
     const Result rc = create();
-    switchu::FileLog::log("[menu_la] prepare done rc=0x%X elapsed=%lums",
+    switchu::FileLog::logCommit("[menu_la] prepare done rc=0x%X elapsed=%lums",
                           rc,
                           static_cast<unsigned long>(
                               armTicksToNs(armGetSystemTick() - startedAt) / 1'000'000ULL));
@@ -136,7 +147,7 @@ inline Result startPrepared(smi::MenuStartMode mode, const smi::SystemStatus& st
     }
 
     g_lastExitReason = LibAppletExitReason_Normal;
-    switchu::FileLog::log("[menu_la] start begin mode=%u status.running=%d status.suspended=0x%016lX",
+    switchu::FileLog::logCommit("[menu_la] start begin mode=%u status.running=%d status.suspended=0x%016lX",
                           static_cast<u32>(mode),
                           status.app_running ? 1 : 0,
                           status.suspended_app_id);
@@ -145,29 +156,30 @@ inline Result startPrepared(smi::MenuStartMode mode, const smi::SystemStatus& st
     libappletArgsSetPlayStartupSound(&la_args, false);
     Result rc = libappletArgsPush(&la_args, &g_holder);
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[menu_la] ArgsPush FAIL: 0x%X", rc);
+        switchu::FileLog::logCommit("[menu_la] ArgsPush FAIL: 0x%X", rc);
         cleanupHolder();
         return rc;
     }
 
     rc = libappletPushInData(&g_holder, &status, sizeof(status));
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[menu_la] PushStatus FAIL: 0x%X", rc);
+        switchu::FileLog::logCommit("[menu_la] PushStatus FAIL: 0x%X", rc);
     } else {
-        switchu::FileLog::log("[menu_la] PushStatus ok size=%zu", sizeof(status));
+        switchu::FileLog::logCommit("[menu_la] PushStatus ok size=%zu", sizeof(status));
     }
 
-    switchu::FileLog::log("[menu_la] holder start call");
+    switchu::FileLog::logCommit("[menu_la] holder start call");
     rc = appletHolderStart(&g_holder);
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[menu_la] Start FAIL: 0x%X", rc);
+        switchu::FileLog::logCommit("[menu_la] Start FAIL: 0x%X", rc);
         cleanupHolder();
         return rc;
     }
 
     g_active = true;
+    g_ready = false;
     g_startedAtTick = armGetSystemTick();
-    switchu::FileLog::log("[menu_la] started (mode=%u holderActive=%d)",
+    switchu::FileLog::logCommit("[menu_la] started (mode=%u holderActive=%d)",
                           static_cast<u32>(mode),
                           appletHolderActive(&g_holder) ? 1 : 0);
     return 0;
@@ -182,18 +194,18 @@ inline Result launch(smi::MenuStartMode mode, const smi::SystemStatus& status) {
 inline Result terminate() {
     if (!g_holderCreated)
         return cleanupHolder();
-    switchu::FileLog::log("[menu_la] terminate begin holderActive=%d",
+    switchu::FileLog::logCommit("[menu_la] terminate begin holderActive=%d",
                           (g_active && appletHolderActive(&g_holder)) ? 1 : 0);
     if (g_active) {
         Result rc = appletHolderRequestExitOrTerminate(&g_holder, 15'000'000'000ULL);
-        switchu::FileLog::log("[menu_la] terminate request rc=0x%X", rc);
+        switchu::FileLog::logCommit("[menu_la] terminate request rc=0x%X", rc);
         g_lastExitReason = R_SUCCEEDED(rc) ? appletHolderGetExitReason(&g_holder)
                                            : LibAppletExitReason_Unexpected;
         if (g_startedAtTick != 0)
             g_lastRuntimeNs = armTicksToNs(armGetSystemTick() - g_startedAtTick);
     }
     const Result cleanupRc = cleanupHolder();
-    switchu::FileLog::log("[menu_la] terminate done reason=%d", (int)g_lastExitReason);
+    switchu::FileLog::logCommit("[menu_la] terminate done reason=%d", (int)g_lastExitReason);
     return cleanupRc;
 }
 
@@ -203,12 +215,12 @@ inline bool checkFinished() {
         if (g_startedAtTick != 0)
             g_lastRuntimeNs = armTicksToNs(armGetSystemTick() - g_startedAtTick);
         g_lastExitReason = appletHolderGetExitReason(&g_holder);
-        switchu::FileLog::log("[menu_la] holder finished reason=%d",
+        switchu::FileLog::logCommit("[menu_la] holder finished reason=%d",
                               (int)g_lastExitReason);
         appletHolderJoin(&g_holder);
         const Result cleanupRc = cleanupHolder();
         if (R_FAILED(cleanupRc))
-            switchu::FileLog::log("[menu_la] finished cleanup FAIL: 0x%X", cleanupRc);
+            switchu::FileLog::logCommit("[menu_la] finished cleanup FAIL: 0x%X", cleanupRc);
         return true;
     }
     return false;
@@ -227,7 +239,7 @@ inline uint64_t lastRuntimeNs() {
 inline Result pushStorage(AppletStorage* st) {
     Result rc = appletHolderPushInteractiveInData(&g_holder, st);
     if (R_FAILED(rc))
-        switchu::FileLog::log("[menu_la] PushInteractiveInData FAIL: 0x%X", rc);
+        switchu::FileLog::logCommit("[menu_la] PushInteractiveInData FAIL: 0x%X", rc);
     appletStorageClose(st);
     return rc;
 }

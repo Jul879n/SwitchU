@@ -15,6 +15,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <cstdio>
+#include <sys/stat.h>
 #include <cstdlib>
 #include <ctime>
 #ifdef SWITCHU_MENU
@@ -43,6 +44,9 @@ extern "C" {
 
     void __nx_win_init(void);
     void __nx_win_exit(void);
+
+    // Weak in libnx (0): __nx_win_init opens this layer instead of creating one.
+    extern u64 __nx_vi_layer_id;
 #endif
 }
 
@@ -105,6 +109,16 @@ extern "C" void userAppExit(void) {
     romfsExit();
 }
 #else
+// Diagnostic: append-only, committed stage markers (survive a forced reboot).
+// Used to find where a frozen HOME launch stops before FileLog::open.
+static void bootMark(const char* stage) {
+    if (FILE* f = std::fopen("sdmc:/config/SwitchU/menu_boot.marker", "a")) {
+        std::fprintf(f, "tick=%llu %s\n", (unsigned long long)armGetSystemTick(), stage);
+        std::fclose(f);
+        fsdevCommitDevice("sdmc");
+    }
+}
+
 extern "C" void __appInit(void) {
     Result rc;
 
@@ -116,6 +130,17 @@ extern "C" void __appInit(void) {
     rc = fsInitialize();
     if (R_FAILED(rc)) diagAbortWithResult(MAKERESULT(Module_Libnx, 501));
 
+    rc = fsdevMountSdmc();
+    if (R_FAILED(rc)) {
+        svcOutputDebugString("[SwitchU-menu] fsdevMountSdmc FAIL, retry", 42);
+        svcSleepThread(100'000'000ULL);
+        rc = fsdevMountSdmc();
+    }
+    const Result mountRc = rc;
+    mkdir("sdmc:/config", 0777);
+    mkdir("sdmc:/config/SwitchU", 0777);
+    bootMark("start: sd mounted");
+
     rc = appletInitialize();
     if (R_FAILED(rc)) {
         svcOutputDebugString("[SwitchU-menu] appletInitialize FAIL", 37);
@@ -123,35 +148,37 @@ extern "C" void __appInit(void) {
     }
     svcOutputDebugString("[SwitchU-menu] appletInitialize OK", 34);
 
+    bootMark("after applet");
     rc = hidInitialize();
     if (R_FAILED(rc)) svcOutputDebugString("[SwitchU-menu] hidInitialize FAIL", 33);
 
+    bootMark("after hid");
     timeInitialize();
     __libnx_init_time();
+    bootMark("after time");
     setsysInitialize();
     setInitialize();
+    bootMark("after set");
     plInitialize(PlServiceType_System);
     psmInitialize();
+    bootMark("after psm");
     lblInitialize();
     splInitialize();
+    bootMark("after spl");
     accountInitialize(AccountServiceType_System);
 
+    bootMark("after account");
     {
         SetSysFirmwareVersion fw = {};
         if (R_SUCCEEDED(setsysGetFirmwareVersion(&fw)))
             hosversionSet(MAKEHOSVERSION(fw.major, fw.minor, fw.micro) | BIT(31));
     }
 
-    rc = fsdevMountSdmc();
-    if (R_FAILED(rc)) {
-        svcOutputDebugString("[SwitchU-menu] fsdevMountSdmc FAIL, retry", 42);
-        svcSleepThread(100'000'000ULL);
-        rc = fsdevMountSdmc();
-    }
-
+    bootMark("before FileLog::open");
     switchu::FileLog::open("menu");
+    switchu::FileLog::logCommit("[menu] boot: log opened (sd mount: 0x%X)", mountRc);
     DebugLog::openFileLog();
-    DebugLog::log("[menu] __appInit complete (sd mount: 0x%X)", rc);
+    DebugLog::log("[menu] __appInit complete (sd mount: 0x%X)", mountRc);
 
     rc = nsInitialize();
     if (R_FAILED(rc))
@@ -159,8 +186,26 @@ extern "C" void __appInit(void) {
     else
         DebugLog::log("[menu] nsInitialize OK");
 
+    // A library applet's managed layer is left at 1280x720 by libnx, so docked
+    // the UI sat unscaled in the middle of the 1080p output. Open the layer
+    // ourselves (its id is needed) and size it to the full output: the
+    // 1280x720 framebuffer is then scaled to it (FitToLayer).
+    u64 managedLayerId = 0;
+    if (R_SUCCEEDED(appletCreateManagedDisplayLayer(&managedLayerId)))
+        __nx_vi_layer_id = managedLayerId;
+
+    switchu::FileLog::logCommit("[menu] boot: services ready, creating window");
     __nx_win_init();
+    switchu::FileLog::logCommit("[menu] boot: window/layer created");
     DebugLog::log("[menu] __nx_win_init done");
+
+    if (managedLayerId) {
+        ViLayer layer{};
+        layer.initialized = true;
+        layer.layer_id = managedLayerId;
+        const Result rc = viSetLayerSize(&layer, 1920, 1080);
+        DebugLog::log("[menu] layer %llu size 1920x1080 rc=0x%X", (unsigned long long)managedLayerId, rc);
+    }
 
     svcOutputDebugString("[SwitchU-menu] __appInit done", 29);
 }
@@ -282,7 +327,9 @@ int main(int argc, char* argv[]) {
         auto makeMenuActivity = [sysStatus, startMode](bool fromTutorial = false) -> std::unique_ptr<nxui::Activity> {
             auto activity = std::make_unique<WiiUMenuApp>();
             activity->setStartupStatus(sysStatus,
-                startMode == switchu::smi::MenuStartMode::AppletReturn);
+                startMode == switchu::smi::MenuStartMode::AppletReturn ||
+                startMode == switchu::smi::MenuStartMode::LockScreen,
+                startMode == switchu::smi::MenuStartMode::LockScreen);
             activity->setTutorialStartupFade(fromTutorial);
             return activity;
         };

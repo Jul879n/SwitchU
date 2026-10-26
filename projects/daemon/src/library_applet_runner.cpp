@@ -37,7 +37,7 @@ Result runLibraryApplet(const LibraryAppletRequest& request,
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
     }
 
-    switchu::FileLog::log("[applet] %s create id=0x%X version=0x%X inputs=%zu",
+    switchu::FileLog::logCommit("[applet] %s create id=0x%X version=0x%X inputs=%zu",
                           request.name, static_cast<unsigned>(request.id),
                           request.version, request.inputCount);
 
@@ -45,7 +45,7 @@ Result runLibraryApplet(const LibraryAppletRequest& request,
     Result rc = appletCreateLibraryApplet(
         &guard.holder, request.id, LibAppletMode_AllForeground);
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[applet] %s create FAIL: 0x%X", request.name, rc);
+        switchu::FileLog::logCommit("[applet] %s create FAIL: 0x%X", request.name, rc);
         return rc;
     }
     guard.created = true;
@@ -67,16 +67,17 @@ Result runLibraryApplet(const LibraryAppletRequest& request,
     }
 
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[applet] %s input FAIL: 0x%X", request.name, rc);
+        switchu::FileLog::logCommit("[applet] %s input FAIL: 0x%X", request.name, rc);
         return rc;
     }
 
     rc = appletHolderStart(&guard.holder);
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[applet] %s start FAIL: 0x%X", request.name, rc);
+        switchu::FileLog::logCommit("[applet] %s start FAIL: 0x%X", request.name, rc);
         return rc;
     }
     guard.started = true;
+    switchu::FileLog::logCommit("[applet] %s started", request.name);
 
     bool exitWasRequested = false;
     while (appletHolderActive(&guard.holder) &&
@@ -86,11 +87,11 @@ Result runLibraryApplet(const LibraryAppletRequest& request,
 
         if (!exitWasRequested && exitRequested && exitRequested()) {
             exitWasRequested = true;
-            switchu::FileLog::log("[applet] %s HOME exit requested", request.name);
+            switchu::FileLog::logCommit("[applet] %s HOME exit requested", request.name);
             const Result exitRc = appletHolderRequestExitOrTerminate(
                 &guard.holder, 5'000'000'000ULL);
             if (R_FAILED(exitRc)) {
-                switchu::FileLog::log("[applet] %s HOME exit FAIL: 0x%X",
+                switchu::FileLog::logCommit("[applet] %s HOME exit FAIL: 0x%X",
                                       request.name, exitRc);
                 rc = exitRc;
             }
@@ -115,7 +116,7 @@ Result runLibraryApplet(const LibraryAppletRequest& request,
     }
 
     const Result foregroundRc = appletRequestToGetForeground();
-    switchu::FileLog::log(
+    switchu::FileLog::logCommit(
         "[applet] %s closed reason=%d rc=0x%X module=%u desc=%u restore_fg=0x%X",
         request.name, static_cast<int>(exitReason), rc,
         R_MODULE(rc), R_DESCRIPTION(rc), foregroundRc);

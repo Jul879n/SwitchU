@@ -45,6 +45,10 @@ struct AppConfig {
     // 0 keeps the hand-made layout. The other modes are display-only
     // projections and never overwrite layout.json.
     int sortMode = 0;
+    // A-Z / Recent also reorder applications that use a larger tile size.
+    bool sortLargeTiles = true;
+    // Show the lock screen when the console wakes from sleep.
+    bool lockScreenEnabled = true;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> lastOpened;
     std::uint64_t lastOpenedSequence = 0;
 

@@ -190,6 +190,8 @@ extern "C" void __appExit(void) {
 static std::atomic<bool> g_running{true};
 static std::atomic<bool> g_powerSequenceStarted{false};
 static UEvent g_mainWakeEvent{};
+// Mirrors the menu's "lock screen" option; true until the menu says otherwise.
+static std::atomic<bool> g_lockScreenEnabled{true};
 static UEvent g_controlCacheWakeEvent{};
 static Event g_generalChannelEvent{};
 static bool g_generalChannelEventReady = false;
@@ -251,6 +253,13 @@ static bool g_pendingForegroundAppletHome = false;
 static bool g_pendingHomeMenuLaunch = false;
 static const char* g_pendingHomeMenuSource = nullptr;
 static uint64_t g_pendingHomeMenuStartedAt = 0;
+// Start mode used when the pending foreground handoff completes (MainMenu, or LockScreen after a wake).
+static smi::MenuStartMode g_pendingHomeMenuMode = smi::MenuStartMode::MainMenu;
+// A power-button sleep with a game in the foreground first shows the lock screen
+// (menu in LockScreen mode) and only goes to sleep once the menu is ready.
+static bool g_sleepAfterLock = false;
+static uint64_t g_sleepAfterLockStartedAt = 0;
+static void startSleepSequence(const char* source);
 static uint8_t g_lastBatteryPercent = 0xFF;
 static PsmChargerType g_lastChargerType = (PsmChargerType)0xFF;
 
@@ -847,12 +856,46 @@ static Result launchPendingHomeMenu() {
     g_pendingHomeMenuSource = nullptr;
     g_pendingHomeMenuStartedAt = 0;
 
-    const auto status = buildSystemStatus();
-    switchu::FileLog::log(
-        "[%s] HOME foreground acquired; launching MainMenu status.running=%d suspended=0x%016lX",
-        source, status.app_running ? 1 : 0, status.suspended_app_id);
+    auto status = buildSystemStatus();
+    const smi::MenuStartMode startMode = g_pendingHomeMenuMode;
+    g_pendingHomeMenuMode = smi::MenuStartMode::MainMenu;
+    // Forwarders (homebrew wrapped as an application, title ids outside the
+    // retail 0x01... range) never let the menu applet come up while they stay
+    // suspended: the menu process hangs before it can mount the SD and the
+    // console freezes on the forwarder's last frame. Close them on HOME instead.
+    if (startMode == smi::MenuStartMode::MainMenu && daemon::app::isRunning() &&
+        (daemon::app::suspendedTitleId() >> 56) != 0x01) {
+        const uint64_t forwarderId = daemon::app::suspendedTitleId();
+        switchu::FileLog::logCommit("[%s] HOME over forwarder 0x%016lX: closing it before the menu",
+                                    source, forwarderId);
+        // Forwarders often ignore RequestExit; do not wait the full graceful timeout.
+        const Result closeRc = daemon::app::terminate(2'000'000'000ULL);
+        switchu::FileLog::logCommit("[%s] forwarder close rc=0x%X", source, closeRc);
+        status = buildSystemStatus();
+    }
+    if (startMode == smi::MenuStartMode::LockScreen) {
+        // Committed: if the console hangs around the lock screen, this survives.
+        switchu::FileLog::logCommit(
+            "[%s] foreground acquired; launching lock screen status.running=%d suspended=0x%016lX",
+            source, status.app_running ? 1 : 0, status.suspended_app_id);
+    } else {
+        switchu::FileLog::logCommit(
+            "[%s] HOME foreground acquired; launching menu mode=%u status.running=%d suspended=0x%016lX",
+            source, static_cast<unsigned>(startMode), status.app_running ? 1 : 0, status.suspended_app_id);
+    }
     const uint64_t launchStartedAt = armGetSystemTick();
-    const Result rc = daemon::menu_la::launch(smi::MenuStartMode::MainMenu, status);
+    Result rc = daemon::menu_la::launch(startMode, status);
+    if (R_FAILED(rc) && startMode == smi::MenuStartMode::LockScreen) {
+        if (g_sleepAfterLock) {
+            // Going to sleep anyway, just without the lock screen.
+            g_sleepAfterLock = false;
+            switchu::FileLog::logCommit("[%s] lock launch FAIL 0x%X; sleeping without it", source, rc);
+            startSleepSequence("lock-launch-failed");
+        } else {
+            const Result resumeRc = daemon::app::resume();
+            switchu::FileLog::log("[%s] lock launch FAIL 0x%X; resuming the game rc=0x%X", source, rc, resumeRc);
+        }
+    }
     const uint64_t launchDoneAt = armGetSystemTick();
     switchu::FileLog::log(
         "[%s] HOME MainMenu launch rc=0x%X foreground_wait=%lums launch=%lums total=%lums",
@@ -863,8 +906,13 @@ static Result launchPendingHomeMenu() {
     if (R_SUCCEEDED(rc))
         armCatalogHold(kCatalogHoldAfterHomeNs);
     logHomeState(source, "after");
+    switchu::FileLog::logCommit("[%s] HOME launch done rc=0x%X", source, rc);
     return rc;
 }
+
+// Menu launched but never reported MenuReady (e.g. hung before it could run).
+static constexpr uint64_t kMenuReadyTimeoutNs = 12'000'000'000ULL;
+static int g_menuHangRetries = 0;
 
 static void requestPowerStateChange(const char* source, bool reboot) {
     Result rc = spsmInitialize();
@@ -897,10 +945,10 @@ static void startSleepSequence(const char* source) {
     pushNotification(smi::MenuMessage::SleepSequence);
     // Preserve the final state even if the sleep ends in a forced power loss.
     switchu::commitSdCard("sleep");
-    // The handoff is cooperative: give the menu a couple of frames to stop
-    // presenting and pause its audio instead of relying on the sleep landing
-    // a frame later.
-    svcSleepThread(50'000'000ULL);
+    // The handoff is cooperative: give the menu time to draw its lock screen,
+    // stop presenting and pause its audio instead of relying on the sleep
+    // landing a frame later.
+    svcSleepThread(250'000'000ULL);
     appletStartSleepSequence(true);
 }
 
@@ -1085,10 +1133,10 @@ static void handleAppletMessages() {
     if (R_FAILED(rc))
         return;
 
-    switchu::FileLog::log("[ae] msg=%u", msg);
+    switchu::FileLog::logCommit("[ae] msg=%u", msg);
     switch (msg) {
         case 1:
-        switchu::FileLog::log("[ae] -> ChangeIntoForeground");
+        switchu::FileLog::logCommit("[ae] -> ChangeIntoForeground");
         launchPendingHomeMenu();
         break;
 
@@ -1096,7 +1144,7 @@ static void handleAppletMessages() {
         // AppletMessage_ChangeIntoBackground: another foreground participant is
         // taking over. The menu no longer stays alive in a hidden suspended
         // state, so there is no extra holder to clean up here.
-        switchu::FileLog::log("[ae] -> ChangeIntoBackground");
+        switchu::FileLog::logCommit("[ae] -> ChangeIntoBackground");
         break;
 
         case 20:
@@ -1106,10 +1154,29 @@ static void handleAppletMessages() {
         case 22:
         case 29:
         case 32:
-        switchu::FileLog::log("[ae] -> Sleep (msg=%u)", msg);
+        switchu::FileLog::logCommit("[ae] -> Sleep (msg=%u)", msg);
         // The application keeps its IApplicationAccessor across system sleep,
         // but must reacquire the foreground after wake. Keep our session state
         // in sync so the Wakeup path is allowed to call app::resume().
+        // With a game in the foreground, show the lock screen *before* sleeping:
+        // take the foreground like the HOME button does, start the menu in
+        // LockScreen mode and sleep once it reports ready. The display then keeps
+        // the finished lock screen as its last frame, so there is no black wait
+        // or stale game frame at wake.
+        if (g_lockScreenEnabled.load() && !g_sleepAfterLock && !g_pendingHomeMenuLaunch &&
+            daemon::app::isRunning() && daemon::app::hasForeground() &&
+            !daemon::menu_la::isActive() && !g_foregroundAppletActive) {
+            if (takeForegroundFromRunningApp("sleep-lock")) {
+                g_pendingHomeMenuLaunch = true;
+                g_pendingHomeMenuSource = "sleep-lock";
+                g_pendingHomeMenuStartedAt = armGetSystemTick();
+                g_pendingHomeMenuMode = smi::MenuStartMode::LockScreen;
+                g_sleepAfterLock = true;
+                g_sleepAfterLockStartedAt = g_pendingHomeMenuStartedAt;
+                switchu::FileLog::logCommit("[ae] sleep with a game: taking the foreground for the lock screen");
+                break;
+            }
+        }
         daemon::app::onHomeSuspend();
         // The console is going under on its own (idle plan or power button):
         // the menu needs the same handoff as a menu-initiated sleep.
@@ -1117,8 +1184,10 @@ static void handleAppletMessages() {
         break;
 
         case 26:
-        switchu::FileLog::log("[ae] -> Wakeup");
+        switchu::FileLog::logCommit("[ae] -> Wakeup");
         g_batteryRefreshPending.store(true);
+        // If the lock screen menu is up (shown before sleeping) it is told below;
+        // otherwise a running game simply comes back.
         if (daemon::app::isRunning() && !daemon::menu_la::isActive()) {
             Result rc = daemon::app::resume();
             if (R_FAILED(rc)) {
@@ -1384,7 +1453,7 @@ static void handleMenuCommand() {
         std::memcpy(&action.uid, args.user_uid, sizeof(action.uid));
         result = g_actionQueue.enqueue(action);
         recordOperationResult(requestId, msg, result, args.title_id);
-        switchu::FileLog::log("[smi] queued launch 0x%016lX (actions=%zu)", args.title_id, g_actionQueue.size());
+        switchu::FileLog::logCommit("[smi] queued launch 0x%016lX (actions=%zu)", args.title_id, g_actionQueue.size());
         break;
     }
 
@@ -1423,7 +1492,7 @@ static void handleMenuCommand() {
             result = g_actionQueue.enqueue(action);
             recordOperationResult(requestId, msg, result);
         }
-        switchu::FileLog::log("[smi] queued album launch (actions=%zu)", g_actionQueue.size());
+        switchu::FileLog::logCommit("[smi] queued album launch (actions=%zu)", g_actionQueue.size());
         break;
 
     case smi::SystemMessage::LaunchMiiEditor:
@@ -1434,7 +1503,7 @@ static void handleMenuCommand() {
             result = g_actionQueue.enqueue(action);
             recordOperationResult(requestId, msg, result);
         }
-        switchu::FileLog::log("[smi] queued Mii Editor launch (actions=%zu)", g_actionQueue.size());
+        switchu::FileLog::logCommit("[smi] queued Mii Editor launch (actions=%zu)", g_actionQueue.size());
         break;
 
     case smi::SystemMessage::LaunchNetConnect:
@@ -1445,7 +1514,7 @@ static void handleMenuCommand() {
             result = g_actionQueue.enqueue(action);
             recordOperationResult(requestId, msg, result);
         }
-        switchu::FileLog::log("[smi] queued NetConnect launch (actions=%zu)", g_actionQueue.size());
+        switchu::FileLog::logCommit("[smi] queued NetConnect launch (actions=%zu)", g_actionQueue.size());
         break;
 
     case smi::SystemMessage::LaunchUserPage: {
@@ -1456,7 +1525,7 @@ static void handleMenuCommand() {
         std::memcpy(&action.uid, args.user_uid, sizeof(action.uid));
         result = g_actionQueue.enqueue(action);
         recordOperationResult(requestId, msg, result);
-        switchu::FileLog::log("[smi] queued User Page launch (actions=%zu)", g_actionQueue.size());
+        switchu::FileLog::logCommit("[smi] queued User Page launch (actions=%zu)", g_actionQueue.size());
         break;
     }
 
@@ -1468,7 +1537,7 @@ static void handleMenuCommand() {
             result = g_actionQueue.enqueue(action);
             recordOperationResult(requestId, msg, result);
         }
-        switchu::FileLog::log("[smi] queued user creator launch (actions=%zu)",
+        switchu::FileLog::logCommit("[smi] queued user creator launch (actions=%zu)",
                               g_actionQueue.size());
         break;
 
@@ -1480,7 +1549,7 @@ static void handleMenuCommand() {
             result = g_actionQueue.enqueue(action);
             recordOperationResult(requestId, msg, result);
         }
-        switchu::FileLog::log("[smi] queued Controller launch (actions=%zu)", g_actionQueue.size());
+        switchu::FileLog::logCommit("[smi] queued Controller launch (actions=%zu)", g_actionQueue.size());
         break;
 
     case smi::SystemMessage::LaunchControllerRemapping:
@@ -1491,7 +1560,7 @@ static void handleMenuCommand() {
             result = g_actionQueue.enqueue(action);
             recordOperationResult(requestId, msg, result);
         }
-        switchu::FileLog::log("[smi] queued controller remapping (actions=%zu)",
+        switchu::FileLog::logCommit("[smi] queued controller remapping (actions=%zu)",
                               g_actionQueue.size());
         break;
 
@@ -1542,15 +1611,30 @@ static void handleMenuCommand() {
         return;
     }
 
+    case smi::SystemMessage::SetLockScreen: {
+        auto args = reader.pop<smi::LockScreenArgs>();
+        g_lockScreenEnabled.store(args.enabled != 0);
+        switchu::FileLog::log("[smi] lock screen %s", args.enabled ? "enabled" : "disabled");
+        pushCommandResult(requestId, 0, "SetLockScreen");
+        return;
+    }
+
     case smi::SystemMessage::MenuReady:
         switchu::FileLog::log("[smi] menu ready");
+        daemon::menu_la::markReady();
+        g_menuHangRetries = 0;
         g_lastOperationFailure = {};
         g_batteryRefreshPending.store(true);
         shortenCatalogHold(kCatalogHoldAfterMenuReadyNs);
+        if (g_sleepAfterLock) {
+            g_sleepAfterLock = false;
+            switchu::FileLog::logCommit("[smi] lock screen menu ready: going to sleep");
+            startSleepSequence("lock-ready");
+        }
         break;
 
     case smi::SystemMessage::MenuClosing:
-        switchu::FileLog::log("[smi] menu closing");
+        switchu::FileLog::logCommit("[smi] menu closing");
         break;
 
     }
@@ -1571,7 +1655,7 @@ static bool handleAction(daemon::SystemAction& action) {
     if (daemon::menu_la::hasHolder() || g_foregroundAppletActive)
         return false;
 
-    switchu::FileLog::log("[action] handling type=%u", (u32)action.type);
+    switchu::FileLog::logCommit("[action] handling type=%u", (u32)action.type);
     switch (action.type) {
         case daemon::SystemActionType::LaunchApplication: {
             Result rc = daemon::app::launch(action.titleId, action.uid);
@@ -1780,7 +1864,10 @@ static void mainLoop() {
                              (uint32_t)g_eventGcMountRc.load());
         }
     }
-    if (g_batteryRefreshPending.exchange(false)) {
+    // Keep the request until a menu is actually there to receive it: consuming
+    // it earlier left a freshly started menu showing 0 % with no charge icon.
+    if (g_batteryRefreshPending.load() && daemon::menu_la::isActive()) {
+        g_batteryRefreshPending.store(false);
         pushBatteryStatusNotification(true);
     }
 
@@ -1797,7 +1884,7 @@ static void mainLoop() {
 
     if (daemon::menu_la::checkFinished()) {
         const uint64_t runtimeNs = daemon::menu_la::lastRuntimeNs();
-        switchu::FileLog::log("[main] menu exited (reason=%d runtime=%lums)",
+        switchu::FileLog::logCommit("[main] menu exited (reason=%d runtime=%lums)",
             (int)daemon::menu_la::exitReason(),
             static_cast<unsigned long>(runtimeNs / 1'000'000ULL));
         if (runtimeNs < 1'000'000'000ULL)
@@ -1813,7 +1900,48 @@ static void mainLoop() {
         didWork = true;
     }
 
+    {
+        uint64_t waitedNs = 0;
+        if (daemon::menu_la::awaitingReady(&waitedNs) && waitedNs > kMenuReadyTimeoutNs) {
+            // Plain log first: if the SD/FS is wedged, a committing log would
+            // block here and the menu would never be terminated.
+            svcOutputDebugString("[SwitchU-daemon] watchdog: menu not ready, terminating", 55);
+            switchu::FileLog::log(
+                "[watchdog] menu not ready after %lums (retries=%d appRunning=%d suspended=0x%016lX); terminating",
+                static_cast<unsigned long>(waitedNs / 1'000'000ULL), g_menuHangRetries,
+                daemon::app::isRunning() ? 1 : 0, daemon::app::suspendedTitleId());
+            const Result termRc = daemon::menu_la::terminate();
+            switchu::FileLog::logCommit("[watchdog] terminate rc=0x%X", termRc);
+            if (g_menuHangRetries++ == 0) {
+                const Result rc = daemon::menu_la::launch(smi::MenuStartMode::MainMenu, buildSystemStatus());
+                switchu::FileLog::logCommit("[watchdog] relaunch rc=0x%X", rc);
+            } else if (daemon::app::isRunning()) {
+                g_menuHangRetries = 0;
+                const Result rc = daemon::app::resume();
+                switchu::FileLog::logCommit("[watchdog] giving up on menu; resumed app rc=0x%X", rc);
+            } else {
+                g_menuHangRetries = 0;
+            }
+            didWork = true;
+        }
+    }
+
     didWork |= consumeOneAction();
+
+    if (g_sleepAfterLock &&
+        armTicksToNs(armGetSystemTick() - g_sleepAfterLockStartedAt) > 3'500'000'000ULL) {
+        // The lock screen did not come up in time: sleep without it.
+        g_sleepAfterLock = false;
+        if (g_pendingHomeMenuLaunch && g_pendingHomeMenuMode == smi::MenuStartMode::LockScreen) {
+            g_pendingHomeMenuLaunch = false;
+            g_pendingHomeMenuSource = nullptr;
+            g_pendingHomeMenuStartedAt = 0;
+            g_pendingHomeMenuMode = smi::MenuStartMode::MainMenu;
+        }
+        switchu::FileLog::logCommit("[main] sleep-lock timed out; sleeping without the lock screen");
+        startSleepSequence("lock-timeout");
+        didWork = true;
+    }
 
     if (daemon::app::checkFinished()) {
         switchu::FileLog::log("[main] app exited");

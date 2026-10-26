@@ -269,12 +269,18 @@ IconStreamer::DecodedIcon IconStreamer::decodeIconData(const std::vector<uint8_t
 // ---------------------------------------------------------------------------
 // Core streaming logic.
 // ---------------------------------------------------------------------------
+void IconStreamer::startBurst(float seconds) {
+    m_burstUntil = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(static_cast<int>(seconds * 1000.f));
+}
+
 void IconStreamer::onPageChanged(int currentPage, int iconsPerPage,
                                  nxui::GpuDevice& gpu, nxui::Renderer& ren,
                                  const std::vector<std::shared_ptr<GlossyIcon>>& allIcons)
 {
     int totalApps  = (int)m_appToSlot.size();
     if (totalApps == 0 || iconsPerPage <= 0) {
+    if (m_paused) return;
         m_lastPage = currentPage;
         m_lastIconsPerPage = iconsPerPage;
         return;
@@ -348,7 +354,8 @@ void IconStreamer::onPageChanged(int currentPage, int iconsPerPage,
     // screen on hardware even though the menu process stayed alive.
     int uploads = 0;
     for (size_t pendingIndex = 0;
-         pendingIndex < m_pendingDecodes.size() && uploads < kUploadsPerFrame;) {
+         pendingIndex < m_pendingDecodes.size() &&
+         uploads < (inBurst() ? kBurstUploadsPerFrame : kUploadsPerFrame);) {
         auto& pending = m_pendingDecodes[pendingIndex];
         if (pending.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
             ++pendingIndex;
@@ -451,7 +458,7 @@ void IconStreamer::onPageChanged(int currentPage, int iconsPerPage,
             loadOrder.push_back(appIndex);
     }
     for (int appIndex : loadOrder) {
-        if ((int)m_pendingDecodes.size() >= kMaxPendingDecodes)
+        if ((int)m_pendingDecodes.size() >= (inBurst() ? kBurstMaxPendingDecodes : kMaxPendingDecodes))
             break;
         if (m_appToSlot[(size_t)appIndex] >= 0 || !hasData(appIndex))
             continue;
@@ -518,6 +525,7 @@ void IconStreamer::forceReload(int currentPage, int iconsPerPage,
     // state. This is especially visible when an overridden icon is applied
     // while edit/move mode still owns a ghost of the focused application.
     for (const auto& icon : allIcons) {
+    if (m_paused) return;
         if (icon)
             icon->setTexture(nullptr);
     }
@@ -545,6 +553,7 @@ void IconStreamer::reloadTitle(
     uint64_t titleId, int currentPage, int iconsPerPage,
     nxui::GpuDevice& gpu, nxui::Renderer& ren,
     const std::vector<std::shared_ptr<GlossyIcon>>& allIcons) {
+    if (m_paused) return;
     const auto found = std::find(m_titleIds.begin(), m_titleIds.end(), titleId);
     if (found == m_titleIds.end()) return;
     const int appIndex = static_cast<int>(found - m_titleIds.begin());

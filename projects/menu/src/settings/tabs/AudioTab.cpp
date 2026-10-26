@@ -1,4 +1,5 @@
 #include "TabBuilders.hpp"
+#include "core/DebugLog.hpp"
 #include <nxui/core/I18n.hpp>
 #include <switch.h>
 #include <algorithm>
@@ -44,11 +45,16 @@ SettingsScreen::Tab settings::tabs::AudioTab::build(SettingsScreen& screen) {
         };
 
         SetSysAudioOutputMode mode = (SetSysAudioOutputMode)1;
-        setsysGetAudioOutputMode(SetSysAudioOutputModeTarget_Unknown0, &mode);
+        const Result getRc = setsysGetAudioOutputMode(SetSysAudioOutputModeTarget_Unknown0, &mode);
+        DebugLog::log("[audio] tv output get rc=0x%x mode=%d", getRc, (int)mode);
         it.intVal = std::clamp((int)mode, 0, 2);
         it.onChange = [](SettingItem& self) {
-            setsysSetAudioOutputMode(SetSysAudioOutputModeTarget_Unknown0,
-                                     (SetSysAudioOutputMode)self.intVal);
+            const Result setRc = setsysSetAudioOutputMode(SetSysAudioOutputModeTarget_Unknown0,
+                                                          (SetSysAudioOutputMode)self.intVal);
+            SetSysAudioOutputMode readBack = (SetSysAudioOutputMode)-1;
+            const Result readRc = setsysGetAudioOutputMode(SetSysAudioOutputModeTarget_Unknown0, &readBack);
+            DebugLog::log("[audio] tv output set=%d rc=0x%x readback rc=0x%x mode=%d",
+                          self.intVal, setRc, readRc, (int)readBack);
         };
         t.items.push_back(std::move(it));
     }

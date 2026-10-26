@@ -3,6 +3,9 @@
 #include "themeshop/ThemeHttp.hpp"
 #include "widgets/GlossyIcon.hpp"
 #include "DebugLog.hpp"
+#ifdef SWITCHU_MENU
+#include "smi_commands.hpp"
+#endif
 
 #include <nxui/core/I18n.hpp>
 #include <switchu/control_cache.hpp>
@@ -1150,8 +1153,8 @@ void WiiUMenuApp::syncSteamGridDb() {
 }
 
 bool WiiUMenuApp::steamGridDbArtworkAllowedHere() const {
-    if (!m_config.steamGridDbEnabled)
-        return false;
+    if (!m_config.steamGridDbEnabled || m_startLocked)
+        return false; // HOME artwork is pointless (and costly) under the lock screen
     if (m_openFolderId != 0)
         return m_config.steamGridDbShowInFolders;
     if (m_appLayoutMode == AppLayoutMode::DynamicLine)
@@ -1543,6 +1546,8 @@ void WiiUMenuApp::createThemeShop() {
     m_themeShop->setMusicState(m_audio.isPlaying(), m_audio.volume(), m_audio.sfxVolume());
     m_themeShop->setGridLayoutState(m_config.gridColumns, m_config.gridRows);
     m_themeShop->setActionHintStyleState(m_config.actionHintStyle);
+    m_themeShop->setSortLargeTilesState(m_config.sortLargeTiles);
+    m_themeShop->setLockScreenState(m_config.lockScreenEnabled);
     refreshAutoThemeSummary();
     m_themeShop->setCursorMotionModeState(m_config.cursorMotionMode);
     m_themeShop->setPageTransitionModeState(m_config.pageTransitionMode);
@@ -1590,6 +1595,20 @@ void WiiUMenuApp::createThemeShop() {
     });
     m_themeShop->onActionHintStyleChange([this](int style) {
         m_config.actionHintStyle = style == 0 ? "panel" : "capsules";
+    });
+    m_themeShop->onSortLargeTilesChange([this](bool enabled) {
+        if (m_config.sortLargeTiles == enabled)
+            return;
+        m_config.sortLargeTiles = enabled;
+        m_config.save();
+        reflowHomeGrid();
+    });
+    m_themeShop->onLockScreenChange([this](bool enabled) {
+        m_config.lockScreenEnabled = enabled;
+        m_config.save();
+#ifdef SWITCHU_MENU
+        switchu::menu::smi_cmd::setLockScreen(enabled);
+#endif
     });
     m_themeShop->onAutoThemeOpen([this]() { openAutoThemeSettings(); });
     m_themeShop->onCursorMotionModeChange([this](int mode) {

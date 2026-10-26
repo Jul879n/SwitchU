@@ -1240,6 +1240,7 @@ nxui::Widget* WiiUMenuApp::focusRoot() {
     if (leaveSplashActive()) return nullptr;
     if (m_launchAnim && m_launchAnim->isPlaying()) return nullptr;
     if (m_folderCaptureRequested || m_folderClosing) return nullptr;
+    if (m_lockScreen && m_lockScreen->isActive()) return m_lockScreen.get();
     if (m_progressDialog && m_progressDialog->isActive()) return m_progressDialog.get();
     if (m_textEntry && m_textEntry->isActive()) return m_textEntry.get();
     if (m_dialog && m_dialog->isActive()) return m_dialog.get();
@@ -1298,10 +1299,14 @@ bool WiiUMenuApp::handleAccessibilityToggleCombo() {
     if (m_navigator.route() == switchu::navigation::Route::ControllerTest)
         return false;
     auto& input = app().input();
-    if (!input.isDown(nxui::Button::Plus) || !input.isDown(nxui::Button::Minus))
+    // isDown() is true only on the frame a button is pressed, so requiring
+    // both would demand a same-frame press. Accept both held with one fresh press.
+    if (!input.isHeld(nxui::Button::Plus) || !input.isHeld(nxui::Button::Minus))
         return false;
     if (m_accessibilityToggleComboHeld)
         return true;
+    if (!input.isDown(nxui::Button::Plus) && !input.isDown(nxui::Button::Minus))
+        return false;
     m_accessibilityToggleComboHeld = true;
     m_plusExitPending = false;
     m_plusExitPendingTimer = 0.f;
@@ -1893,8 +1898,28 @@ void WiiUMenuApp::handleSystemAction(SysAction a) {
     switch (a) {
         case SysAction::HomeDismiss: {
             // Physical HOME while already browsing the menu.
+            // HOME while the lock screen is up just lifts the curtain.
+            if (m_lockScreen && m_lockScreen->isActive()) {
+                DebugLog::log("[pump] HomeDismiss -> unlock");
+                app().resetIdle(); // the curtain should move at full rate
+                m_lockScreen->requestUnlock();
+                break;
+            }
             DebugLog::log("[pump] HomeDismiss -> close folder/overlays");
             m_launcher.setAppHasForeground(false);
+            // Like the stock HOME menu: with nothing left to dismiss, HOME goes
+            // back to the suspended game instead of doing nothing.
+            const std::uint64_t suspendedId = m_launcher.suspendedTitleId();
+            if (suspendedId != 0 && m_openFolderId == 0 && !m_editMode &&
+                m_navigator.route() == switchu::navigation::Route::Home &&
+                focusRoot() == &rootBox() &&
+                !(m_launchAnim && m_launchAnim->isPlaying())) {
+                const AppEntry* suspended = m_model.findByTitleId(suspendedId);
+                DebugLog::log("[pump] HomeDismiss -> resume suspended title 0x%016lX",
+                              static_cast<unsigned long>(suspendedId));
+                resumeSuspendedApplication(suspendedId, suspended ? suspended->title : std::string());
+                break;
+            }
             const std::uint32_t folderBefore = m_openFolderId;
             closeActiveOverlays(true);
             if (folderBefore != 0) {

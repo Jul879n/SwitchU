@@ -1,4 +1,33 @@
 {
+  "lock": {
+    "enter": "Appuie sur A pour entrer",
+    "hint": "N'importe quel autre bouton, ou un toucher, fonctionne aussi",
+    "game_paused": "en pause",
+    "date_format": "{weekday} {day} {month}",
+    "weekday": {
+      "0": "dimanche",
+      "1": "lundi",
+      "2": "mardi",
+      "3": "mercredi",
+      "4": "jeudi",
+      "5": "vendredi",
+      "6": "samedi"
+    },
+    "month": {
+      "1": "janvier",
+      "2": "février",
+      "3": "mars",
+      "4": "avril",
+      "5": "mai",
+      "6": "juin",
+      "7": "juillet",
+      "8": "août",
+      "9": "septembre",
+      "10": "octobre",
+      "11": "novembre",
+      "12": "décembre"
+    }
+  },
   "common": {
     "auto": "Auto",
     "na": "N/A",
@@ -92,6 +121,8 @@
     "user_profile": "Profil utilisateur"
   },
   "tutorial": {
+    "header": "Tutoriel SwitchU",
+    "test_label": "Test",
     "accessibility": {
       "title": "Accessibilité vocale",
       "body": "La lecture vocale est disponible pour ce menu. Elle peut lire l'élément sélectionné et les actions disponibles à voix haute.",
@@ -112,12 +143,15 @@
     "navigation": {
       "title": "Navigation",
       "body": "Tu peux naviguer avec la croix directionnelle, le stick gauche ou le stick droit. Essaie une direction horizontale et une direction verticale.",
-      "objective": "Teste une direction gauche ou droite puis haut ou bas."
+      "objective": "Teste une direction gauche ou droite puis haut ou bas.",
+      "left_right": "Gauche / droite",
+      "up_down": "Haut / bas"
     },
     "confirm": {
       "title": "Valider",
       "body": "Le bouton A confirme une action, lance un jeu ou ouvre l'élément sélectionné.",
-      "objective": "Appuie sur A pour valider cette étape."
+      "objective": "Appuie sur A pour valider cette étape.",
+      "detected": "Bouton A détecté"
     },
     "themes": {
       "title": "Thèmes",
@@ -657,6 +691,10 @@
     "options": {
       "action_hints": "Indications d’action",
       "action_hints_desc": "Choisissez l’apparence des commandes contextuelles en bas à droite.",
+      "sort_large_tiles": "Trier aussi les grandes tuiles",
+      "sort_large_tiles_desc": "A-Z et Récents déplacent aussi les applications avec une tuile plus grande.",
+      "lock_screen": "Écran de verrouillage",
+      "lock_screen_desc": "Affiche un écran de verrouillage au réveil de la console.",
       "hint_panel": "Panneau",
       "hint_capsules": "Capsules"
     },

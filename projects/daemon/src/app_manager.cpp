@@ -49,7 +49,7 @@ void ensureSaveData(std::uint64_t applicationId,
 
     const Result rc = fsCreateSaveDataFileSystem(&attribute, &creation, &meta);
     if (R_FAILED(rc)) {
-        switchu::FileLog::log("[app] ensureSaveData type=%d FAIL: 0x%X",
+        switchu::FileLog::logCommit("[app] ensureSaveData type=%d FAIL: 0x%X",
                               static_cast<int>(type), rc);
     }
 }
@@ -65,7 +65,7 @@ LaunchMetadata ensureApplicationSaveData(std::uint64_t titleId, AccountUid uid) 
     LaunchMetadata launch{};
     switchu::control_cache::Meta meta{};
     if (!switchu::control_cache::readMeta(titleId, meta)) {
-        switchu::FileLog::log(
+        switchu::FileLog::logCommit(
             "[app] control cache missing for 0x%016lX; save data not precreated",
             titleId);
         return launch;
@@ -154,7 +154,7 @@ void ApplicationSession::resetToIdle() {
 Result ApplicationSession::failTransition(Result rc,
                                           const char* stage,
                                           bool applicationStarted) {
-    switchu::FileLog::log(
+    switchu::FileLog::logCommit(
         "[app] session=%lu transition=%s FAIL rc=0x%X started=%d",
         static_cast<unsigned long>(m_sessionId), stage, rc,
         applicationStarted ? 1 : 0);
@@ -162,7 +162,7 @@ Result ApplicationSession::failTransition(Result rc,
     if (applicationStarted && appletApplicationActive(&m_application)) {
         m_state = SessionState::Terminating;
         const Result terminateRc = appletApplicationTerminate(&m_application);
-        switchu::FileLog::log("[app] rollback terminate rc=0x%X", terminateRc);
+        switchu::FileLog::logCommit("[app] rollback terminate rc=0x%X", terminateRc);
         appletApplicationJoin(&m_application);
         m_lastExitReason = appletApplicationGetExitReason(&m_application);
     }
@@ -181,20 +181,20 @@ Result ApplicationSession::stopCurrent(std::uint64_t gracefulTimeoutNs,
     }
 
     m_state = SessionState::Terminating;
-    switchu::FileLog::log(
+    switchu::FileLog::logCommit(
         "[app] session=%lu stop reason=%s title=0x%016lX",
         static_cast<unsigned long>(m_sessionId), reason, m_titleId);
 
     const Result requestRc = appletApplicationRequestExit(&m_application);
-    switchu::FileLog::log("[app] RequestExit rc=0x%X", requestRc);
+    switchu::FileLog::logCommit("[app] RequestExit rc=0x%X", requestRc);
 
     Result waitRc = eventWait(&m_application.StateChangedEvent, gracefulTimeoutNs);
     if (waitRc == KERNELRESULT(TimedOut) || R_FAILED(waitRc)) {
-        switchu::FileLog::log("[app] graceful exit unavailable rc=0x%X; forcing terminate",
+        switchu::FileLog::logCommit("[app] graceful exit unavailable rc=0x%X; forcing terminate",
                               waitRc);
         const Result terminateRc = appletApplicationTerminate(&m_application);
         if (R_FAILED(terminateRc)) {
-            switchu::FileLog::log("[app] force terminate FAIL rc=0x%X", terminateRc);
+            switchu::FileLog::logCommit("[app] force terminate FAIL rc=0x%X", terminateRc);
             closeAccessor();
             m_state = SessionState::Error;
             m_lastResult = terminateRc;
@@ -205,7 +205,7 @@ Result ApplicationSession::stopCurrent(std::uint64_t gracefulTimeoutNs,
 
     appletApplicationJoin(&m_application);
     m_lastExitReason = appletApplicationGetExitReason(&m_application);
-    switchu::FileLog::log("[app] joined exitReason=%d",
+    switchu::FileLog::logCommit("[app] joined exitReason=%d",
                           static_cast<int>(m_lastExitReason));
     resetToIdle();
 
@@ -228,17 +228,17 @@ Result ApplicationSession::launch(std::uint64_t titleId, AccountUid uid) {
     m_titleId = titleId;
     m_lastResult = 0;
     m_lastExitReason = AppletApplicationExitReason_Normal;
-    switchu::FileLog::log(
+    switchu::FileLog::logCommit(
         "[app] session=%lu launch title=0x%016lX uid_valid=%d",
         static_cast<unsigned long>(m_sessionId), titleId,
         accountUidIsValid(&uid) ? 1 : 0);
 
     const Result touchRc = nsTouchApplication(titleId);
     if (R_FAILED(touchRc))
-        switchu::FileLog::log("[app] nsTouchApplication non-fatal rc=0x%X", touchRc);
+        switchu::FileLog::logCommit("[app] nsTouchApplication non-fatal rc=0x%X", touchRc);
 
     const LaunchMetadata metadata = ensureApplicationSaveData(titleId, uid);
-    switchu::FileLog::log(
+    switchu::FileLog::logCommit(
         "[app] launch metadata startup_user=%u option=%u accepts_user=%d needs_user=%d",
         static_cast<unsigned>(metadata.startupUserAccount),
         static_cast<unsigned>(metadata.startupUserAccountOption),
@@ -275,7 +275,7 @@ Result ApplicationSession::launch(std::uint64_t titleId, AccountUid uid) {
             }
         }
         if (R_FAILED(rc)) {
-            switchu::FileLog::log("[app] preselected user ignored rc=0x%X", rc);
+            switchu::FileLog::logCommit("[app] preselected user ignored rc=0x%X", rc);
             // User preselection is an optimization. The title can still show
             // its own account selector, so this is intentionally non-fatal.
         }
@@ -293,7 +293,7 @@ Result ApplicationSession::launch(std::uint64_t titleId, AccountUid uid) {
 
     m_state = SessionState::Foreground;
     m_lastResult = 0;
-    switchu::FileLog::log("[app] session=%lu foreground title=0x%016lX",
+    switchu::FileLog::logCommit("[app] session=%lu foreground title=0x%016lX",
                           static_cast<unsigned long>(m_sessionId), titleId);
     return 0;
 }
@@ -308,7 +308,7 @@ Result ApplicationSession::resume() {
     const Result rc = appletApplicationRequestForApplicationToGetForeground(&m_application);
     if (R_FAILED(rc)) {
         m_lastResult = rc;
-        switchu::FileLog::log("[app] session=%lu resume FAIL rc=0x%X",
+        switchu::FileLog::logCommit("[app] session=%lu resume FAIL rc=0x%X",
                               static_cast<unsigned long>(m_sessionId), rc);
         return rc;
     }
@@ -319,11 +319,15 @@ Result ApplicationSession::resume() {
 }
 
 Result ApplicationSession::terminate() {
+    return terminate(kGracefulExitTimeoutNs);
+}
+
+Result ApplicationSession::terminate(std::uint64_t gracefulTimeoutNs) {
     if (!isRunning() && !appletApplicationActive(&m_application)) {
         resetToIdle();
         return 0;
     }
-    return stopCurrent(kGracefulExitTimeoutNs, "explicit-terminate");
+    return stopCurrent(gracefulTimeoutNs, "explicit-terminate");
 }
 
 Result ApplicationSession::areLibraryAppletsLeft(bool* out) {
@@ -349,7 +353,7 @@ bool ApplicationSession::checkFinished() {
 
     appletApplicationJoin(&m_application);
     m_lastExitReason = appletApplicationGetExitReason(&m_application);
-    switchu::FileLog::log("[app] session=%lu finished reason=%d",
+    switchu::FileLog::logCommit("[app] session=%lu finished reason=%d",
                           static_cast<unsigned long>(m_sessionId),
                           static_cast<int>(m_lastExitReason));
     resetToIdle();
@@ -378,6 +382,7 @@ Event* stateChangedEvent() { return session().stateChangedEvent(); }
 Result launch(std::uint64_t titleId, AccountUid uid) { return session().launch(titleId, uid); }
 Result resume() { return session().resume(); }
 Result terminate() { return session().terminate(); }
+Result terminate(std::uint64_t gracefulTimeoutNs) { return session().terminate(gracefulTimeoutNs); }
 Result areLibraryAppletsLeft(bool* out) { return session().areLibraryAppletsLeft(out); }
 Result requestExitLibraryAppletOrTerminate(std::uint64_t timeoutNs) {
     return session().requestExitLibraryAppletOrTerminate(timeoutNs);

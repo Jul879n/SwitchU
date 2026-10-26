@@ -95,6 +95,8 @@ bool AppConfig::load() {
     readJsonOpt(j, "steamGridDbShowInFolders", steamGridDbShowInFolders);
     readJsonOpt(j, "steamGridDbApiKey", steamGridDbApiKey);
     readJsonOpt(j, "sortMode", sortMode);
+    readJsonOpt(j, "sortLargeTiles", sortLargeTiles);
+    readJsonOpt(j, "lockScreenEnabled", lockScreenEnabled);
     readJsonOpt(j, "lastOpenedSequence", lastOpenedSequence);
     lastOpened.clear();
     if (auto it = j.find("lastOpened"); it != j.end() && it->is_object()) {
@@ -215,6 +217,8 @@ bool AppConfig::save() const {
     j["steamGridDbShowInFolders"] = steamGridDbShowInFolders;
     j["steamGridDbApiKey"] = steamGridDbApiKey;
     j["sortMode"] = std::clamp(sortMode, 0, 2);
+    j["sortLargeTiles"] = sortLargeTiles;
+    j["lockScreenEnabled"] = lockScreenEnabled;
     j["lastOpenedSequence"] = lastOpenedSequence;
     {
         nlohmann::json opened = nlohmann::json::object();

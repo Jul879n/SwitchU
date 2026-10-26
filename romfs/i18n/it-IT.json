@@ -1,4 +1,33 @@
 {
+  "lock": {
+    "enter": "Premi A per entrare",
+    "hint": "Anche qualsiasi altro tasto o un tocco",
+    "game_paused": "in pausa",
+    "date_format": "{weekday} {day} {month}",
+    "weekday": {
+      "0": "domenica",
+      "1": "lunedì",
+      "2": "martedì",
+      "3": "mercoledì",
+      "4": "giovedì",
+      "5": "venerdì",
+      "6": "sabato"
+    },
+    "month": {
+      "1": "gennaio",
+      "2": "febbraio",
+      "3": "marzo",
+      "4": "aprile",
+      "5": "maggio",
+      "6": "giugno",
+      "7": "luglio",
+      "8": "agosto",
+      "9": "settembre",
+      "10": "ottobre",
+      "11": "novembre",
+      "12": "dicembre"
+    }
+  },
   "common": {
     "auto": "Auto",
     "na": "N/A",
@@ -288,6 +317,12 @@
     "replace": "Replace"
   },
   "themeshop": {
+    "options": {
+      "sort_large_tiles": "Ordina anche le icone grandi",
+      "sort_large_tiles_desc": "A-Z e Recenti spostano anche le applicazioni con un'icona più grande.",
+      "lock_screen": "Schermata di blocco",
+      "lock_screen_desc": "Mostra una schermata di blocco quando la console esce dalla modalità riposo."
+    },
     "source": {
       "builtin": "Integrato",
       "custom": "Personalizzato",
